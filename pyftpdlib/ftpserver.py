@@ -149,7 +149,8 @@ except ImportError:
 __all__ = ['proto_cmds', 'Error', 'log', 'logline', 'logerror', 'DummyAuthorizer',
            'AuthorizerError', 'FTPHandler', 'FTPServer', 'PassiveDTP',
            'ActiveDTP', 'DTPHandler', 'ThrottledDTPHandler', 'FileProducer',
-           'BufferedIteratorProducer', 'AbstractedFS', 'CallLater', 'CallEvery']
+           'BufferedIteratorProducer', 'AbstractedFS', 'CallLater', 'CallEvery',
+           'socket_for_file']
 
 
 __pname__   = 'Python FTP server library (pyftpdlib)'
@@ -260,6 +261,14 @@ proto_cmds = {
 if not hasattr(os, 'chmod'):
     del proto_cmds['SITE CHMOD']
 
+def socket_for_file(f):
+    # Unfortunately there is no way to tell if the file descriptor
+    # represents an IPv6 socket without making the socket object
+    fd = f.fileno()
+    ss = socket.fromfd(fd,socket.AF_INET, socket.SOCK_STREAM)
+    if len(ss.getsockname()) == 4:
+        ss = socket.fromfd(fd,socket.AF_INET6, socket.SOCK_STREAM)
+    return ss
 
 # A wrapper around os.strerror() which may be not available
 # on all platforms (e.g. pythonCE). Expected arg is a
@@ -3679,37 +3688,44 @@ class FTPServer(object, asyncore.dispatcher):
         asyncore.dispatcher.__init__(self)
         self.handler = handler
         self.ip_map = []
-        host, port = address
+
         # in case of FTPS class not properly configured we want errors
         # to be raised here rather than later, when client connects
         if hasattr(handler, 'get_ssl_context'):
             handler.get_ssl_context()
 
-        # AF_INET or AF_INET6 socket
-        # Get the correct address family for our host (allows IPv6 addresses)
-        try:
-            info = socket.getaddrinfo(host, port, socket.AF_UNSPEC,
-                                      socket.SOCK_STREAM, 0, socket.AI_PASSIVE)
-        except socket.gaierror:
-            # Probably a DNS issue. Assume IPv4.
-            self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.set_reuse_addr()
-            self.bind((host, port))
-        else:
-            for res in info:
-                af, socktype, proto, canonname, sa = res
-                try:
-                    self.create_socket(af, socktype)
-                    self.set_reuse_addr()
-                    self.bind(sa)
-                except socket.error, msg:
-                    if self.socket:
-                        self.socket.close()
-                    self.socket = None
-                    continue
-                break
-            if not self.socket:
-                raise socket.error(msg)
+        if address is not None:
+            host, port = address
+
+            # AF_INET or AF_INET6 socket
+            # Get the correct address family for our host (allows IPv6 addresses)
+            try:
+                info = socket.getaddrinfo(host, port, socket.AF_UNSPEC,
+                                          socket.SOCK_STREAM, 0, socket.AI_PASSIVE)
+            except socket.gaierror:
+                # Probably a DNS issue. Assume IPv4.
+                self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.set_reuse_addr()
+                self.bind((host, port))
+            else:
+                for res in info:
+                    af, socktype, proto, canonname, sa = res
+                    try:
+                        self.create_socket(af, socktype)
+                        self.set_reuse_addr()
+                        self.bind(sa)
+                    except socket.error, msg:
+                        if self.socket:
+                            self.socket.close()
+                        self.socket = None
+                        continue
+                    break
+                if not self.socket:
+                    raise socket.error(msg)
+            self.listen(5)
+
+    def set_server_socket(self, sock):
+        asyncore.dispatcher.__init__(self, sock, self._map)
         self.listen(5)
 
     @property

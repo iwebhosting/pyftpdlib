@@ -3763,7 +3763,11 @@ class FTPServer(object, asyncore.dispatcher):
             log("Starting FTP server")
             try:
                 try:
-                    while asyncore.socket_map or _scheduler._tasks:
+                    while asyncore.socket_map:
+                        # I have removed _scheduler._tasks from the above while
+                        # because I want the process to exit when there are no
+                        # more sockets. This may have unintended consequences,
+                        # so I am leaving this comment here. AWDB 2012-02-03
                         poll_fun(timeout)
                         _scheduler()
                 except (KeyboardInterrupt, SystemExit, asyncore.ExitNow):
@@ -3933,8 +3937,11 @@ def main():
     parser.add_option('-i', '--interface', default='0.0.0.0', metavar="ADDRESS",
                       help="specify the interface to run on (default all "
                            "interfaces)")
-    parser.add_option('-p', '--port', type="int", default=21, metavar="PORT",
+    parser.add_option('-p', '--port', type="int", default=None, metavar="PORT",
                       help="specity port number to run on (default 21)")
+    parser.add_option('-I', '--inetd', action="store_true", default=False,
+                      help="handle a single FTP session delivered on the socket"
+                           "attached to stdin")
     parser.add_option('-w', '--write', action="store_true", default=False,
                       help="grants write access for the anonymous user "
                            "(default read-only)")
@@ -3975,7 +3982,19 @@ def main():
     handler.authorizer = authorizer
     handler.masquerade_address = options.nat_address
     handler.passive_ports = passive_ports
-    ftpd = FTPServer((options.interface, options.port), FTPHandler)
+
+    if (options.inetd) and (options.interface or options.port):
+        parser.error('--inetd and is mutually exclusive with both --port and --interface')
+
+    if options.inetd:
+        sys.stdout = sys.stderr
+        ftpd = FTPServer(None, FTPHandler)
+        ftp_connection = handler(socket_for_file(sys.stdin), ftpd)
+        ftp_connection.handle()
+    else:
+        if not options.port:
+            options.port = 21
+        ftpd = FTPServer((options.interface, options.port), FTPHandler)
     ftpd.serve_forever()
 
 if __name__ == '__main__':
